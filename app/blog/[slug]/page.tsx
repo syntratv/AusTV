@@ -1,0 +1,594 @@
+// app/blog/[slug]/page.tsx
+import { blogPosts } from '@/lib/blog';
+import { CONSTANTS } from '@/lib/seo';
+import { notFound } from 'next/navigation';
+import Link from 'next/link';
+import Image from 'next/image';
+import {
+  ArrowLeft,
+  Calendar,
+  User,
+  Tag,
+  Clock,
+  Zap,
+  ShieldCheck,
+  Headphones,
+  BookOpen,
+} from 'lucide-react';
+import ShareButtons from '../../components/ShareButtons';
+import ArticleScrollSidebar from '../../components/ArticleScrollSidebar';
+
+type Props = { params: Promise<{ slug: string }> };
+
+const SITE_URL = CONSTANTS.SITE_URL;
+const BRAND = CONSTANTS.BRAND_NAME;
+const LANGUAGE = CONSTANTS.LANGUAGE || 'en-AU';
+
+const clampTitle = (s: string, max = 60): string =>
+  s.length <= max ? s : s.slice(0, max - 1).trimEnd() + '…';
+
+const clampDescription = (s: string, max = 160): string =>
+  s.length <= max ? s : s.slice(0, max - 3).trimEnd() + '...';
+
+function getCategoryLabel(post: any): string {
+  if (post.category) {
+    const map: Record<string, string> = {
+      setup: 'Setup Guide',
+      review: 'Review',
+      sports: 'Live Sports',
+      tips: 'Tips & Tricks',
+      news: 'News',
+    };
+    return map[post.category] || post.category;
+  }
+  if (post.keywords && post.keywords.length > 0) return post.keywords[0];
+  return 'IPTV Australia Guide';
+}
+
+function getReadTime(post: any): number {
+  if (post.readTime) {
+    const match = String(post.readTime).match(/(\d+)/);
+    if (match) return parseInt(match[1]);
+  }
+  const words = (post.content || '')
+    .replace(/<[^>]*>/g, '')
+    .split(/\s+/)
+    .filter(Boolean).length;
+  return Math.max(3, Math.ceil(words / 200));
+}
+
+function formatDate(dateStr: string): string {
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    return d.toLocaleDateString('en-AU', {
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric',
+    });
+  } catch {
+    return dateStr;
+  }
+}
+
+function sanitizeContent(html: string): string {
+  return html
+    .replace(/<h1(\s[^>]*)?>/gi, '<h2$1>')
+    .replace(/<\/h1>/gi, '<\/h2>');
+}
+
+function extractFAQs(html: string): { q: string; a: string }[] {
+  const faqs: { q: string; a: string }[] = [];
+
+  const cardRegex =
+    /<div class="faq-card[^"]*">\s*<h3[^>]*>[\s\S]*?<span>([\s\S]*?)<\/span>\s*<\/h3>\s*<p[^>]*>([\s\S]*?)<\/p>\s*<\/div>/gi;
+  let match;
+  while ((match = cardRegex.exec(html)) !== null) {
+    const q = match[1].replace(/<[^>]*>/g, '').trim();
+    const a = match[2].replace(/<[^>]*>/g, '').trim();
+    if (q.length > 5 && a.length > 10) {
+      faqs.push({ q, a });
+    }
+  }
+
+  if (faqs.length === 0) {
+    const legacyRegex = /<h3[^>]*>([\s\S]*?)<\/h3>\s*<p[^>]*>([\s\S]*?)<\/p>/gi;
+    let legacyMatch;
+    while ((legacyMatch = legacyRegex.exec(html)) !== null) {
+      const rawQ = legacyMatch[1].replace(/<[^>]*>/g, '').trim();
+      const rawA = legacyMatch[2].replace(/<[^>]*>/g, '').trim();
+      if (rawQ.includes('Q.') || rawQ.endsWith('?')) {
+        const cleanQ = rawQ.replace(/^Q\.\s*/, '').trim();
+        if (cleanQ.length > 5 && rawA.length > 10) {
+          faqs.push({ q: cleanQ, a: rawA });
+        }
+      }
+    }
+  }
+
+  return faqs.slice(0, 10);
+}
+
+function getRelatedPosts(currentPost: any, allPosts: any[], limit = 3): any[] {
+  const scored = allPosts
+    .filter((p) => p.slug !== currentPost.slug)
+    .map((p) => {
+      let score = 0;
+      if (p.category && currentPost.category && p.category === currentPost.category) {
+        score += 5;
+      }
+      const currentKw = (currentPost.keywords || []).map((k: string) => k.toLowerCase());
+      const otherKw = (p.keywords || []).map((k: string) => k.toLowerCase());
+      const shared = currentKw.filter((k: string) => otherKw.includes(k));
+      score += shared.length * 2;
+      if (p.author === currentPost.author) score += 1;
+      return { post: p, score };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  return scored.slice(0, limit).map((s) => s.post);
+}
+
+// ---------------------------------------------------------------------------
+// EXTRACT HEADINGS from content for schema (about, mentions)
+// ---------------------------------------------------------------------------
+function extractHeadings(html: string): string[] {
+  const headings: string[] = [];
+  const regex = /<h2[^>]*>([\s\S]*?)<\/h2>/gi;
+  let match;
+  while ((match = regex.exec(html)) !== null) {
+    const text = match[1].replace(/<[^>]*>/g, '').trim();
+    if (text.length > 3 && text.length < 100) {
+      headings.push(text);
+    }
+  }
+  return headings.slice(0, 8);
+}
+
+export function generateStaticParams() {
+  return blogPosts.map((post) => ({ slug: post.slug }));
+}
+
+export async function generateMetadata({ params }: Props) {
+  const resolvedParams = await params;
+  const post = blogPosts.find((p) => p.slug === resolvedParams.slug);
+
+  if (!post) {
+    const fallbackUrl = `${SITE_URL}/blog`;
+    return {
+      title: 'Article Not Found',
+      description: 'The article you are looking for could not be found.',
+      alternates: { canonical: fallbackUrl },
+    };
+  }
+
+  const shortTitle = clampTitle(post.title);
+  const description = clampDescription(
+    post.description ||
+      post.excerpt ||
+      `Read the full ${BRAND} guide and tips for IPTV streaming in Australia.`
+  );
+
+  const canonicalUrl = `${SITE_URL}/blog/${post.slug}`;
+  const imageUrl = post.image.startsWith('http')
+    ? post.image
+    : `${SITE_URL}${post.image}`;
+
+  return {
+    metadataBase: new URL(SITE_URL),
+    title: { absolute: shortTitle },
+    description,
+    keywords: post.keywords?.length
+      ? post.keywords.join(', ')
+      : `${CONSTANTS.FOCUS_KEYWORD}, ${CONSTANTS.SECONDARY_FOCUS_KEYWORD}`,
+    authors: [{ name: post.author }],
+    creator: post.author,
+    publisher: BRAND,
+    alternates: {
+      canonical: canonicalUrl,
+      languages: {
+        'en-AU': canonicalUrl,
+        'en-US': canonicalUrl,
+        'x-default': canonicalUrl,
+      },
+    },
+    openGraph: {
+      title: shortTitle,
+      description,
+      url: canonicalUrl,
+      siteName: BRAND,
+      locale: CONSTANTS.LOCALE,
+      type: 'article',
+      publishedTime: post.date,
+      modifiedTime: post.date,
+      authors: [post.author],
+      images: [{ url: imageUrl, width: 1200, height: 630, alt: post.title }],
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title: shortTitle,
+      description,
+      images: [imageUrl],
+    },
+    robots: {
+      index: true,
+      follow: true,
+      googleBot: {
+        index: true,
+        follow: true,
+        'max-video-preview': -1,
+        'max-image-preview': 'large',
+        'max-snippet': -1,
+      },
+    },
+    category: 'entertainment',
+  };
+}
+
+export default async function BlogPostPage({ params }: Props) {
+  const resolvedParams = await params;
+  const post = blogPosts.find((p) => p.slug === resolvedParams.slug);
+
+  if (!post) {
+    notFound();
+  }
+
+  const readTime = getReadTime(post);
+  const displayCategory = getCategoryLabel(post);
+  const dateStr = formatDate(post.date);
+  const canonicalUrl = `${SITE_URL}/blog/${post.slug}`;
+  const imageUrl = post.image.startsWith('http')
+    ? post.image
+    : `${SITE_URL}${post.image}`;
+
+  const safeContent = sanitizeContent(post.content);
+  const faqs = extractFAQs(post.content);
+  const relatedPosts = getRelatedPosts(post, blogPosts, 3);
+  const articleHeadings = extractHeadings(safeContent);
+  const wordCount = post.content.replace(/<[^>]*>/g, '').split(/\s+/).filter(Boolean).length;
+
+  const whatsappIboMsg = encodeURIComponent(
+    `G'day! I'd like to get IBO Player Pro access subscription.`
+  );
+  const whatsappSubMsg = encodeURIComponent(
+    `G'day! I'd like to get an IPTV Australia subscription.`
+  );
+
+  const authorId = `${SITE_URL}/#author-${post.author
+    .toLowerCase()
+    .replace(/\s+/g, '-')}`;
+
+  const orgId = `${SITE_URL}/#organization`;
+  const websiteId = `${SITE_URL}/#website`;
+
+  // ---------------------------------------------------------------------------
+  // ENHANCED ARTICLE JSON-LD GRAPH
+  // Now includes: Person, BlogPosting, WebPage, BreadcrumbList,
+  // Speakable, ImageObject, and optional FAQPage. Every node references
+  // the site wide Organization and WebSite @ids.
+  // ---------------------------------------------------------------------------
+  const jsonLdGraph: any = {
+    '@context': 'https://schema.org',
+    '@graph': [
+      // AUTHOR (Person)
+      {
+        '@type': 'Person',
+        '@id': authorId,
+        name: post.author,
+        url: `${SITE_URL}/about`,
+        jobTitle: 'IPTV Australia Specialist',
+        description: `Specialises in IPTV streaming guides and setup for Australian viewers.`,
+        knowsAbout: [
+          'IPTV Australia',
+          'IBO Player Pro',
+          'Firestick setup',
+          'Smart TV streaming',
+          '4K streaming',
+        ],
+        worksFor: { '@id': orgId },
+      },
+
+      // ARTICLE (BlogPosting)
+      {
+        '@type': 'BlogPosting',
+        '@id': `${canonicalUrl}/#article`,
+        headline: post.title,
+        name: post.title,
+        description: post.description || post.excerpt,
+        keywords: post.keywords ? post.keywords.join(', ') : '',
+        articleSection: displayCategory,
+        wordCount: wordCount,
+        timeRequired: `PT${readTime}M`,
+        image: {
+          '@type': 'ImageObject',
+          '@id': `${canonicalUrl}/#primaryimage`,
+          url: imageUrl,
+          contentUrl: imageUrl,
+          width: 1200,
+          height: 630,
+          caption: post.title,
+          representativeOfPage: true,
+        },
+        thumbnailUrl: imageUrl,
+        datePublished: post.date,
+        dateModified: post.date,
+        inLanguage: LANGUAGE,
+        author: { '@id': authorId },
+        publisher: { '@id': orgId },
+        mainEntityOfPage: { '@id': `${canonicalUrl}/#webpage` },
+        isPartOf: { '@id': `${canonicalUrl}/#webpage` },
+        // About / mentions derived from article headings and keywords
+        about: articleHeadings.slice(0, 4).map((h) => ({
+          '@type': 'Thing',
+          name: h,
+        })),
+        mentions: (post.keywords || []).slice(0, 6).map((k: string) => ({
+          '@type': 'Thing',
+          name: k,
+        })),
+        // Speakable tells Google which parts are best for voice answers
+        speakable: {
+          '@type': 'SpeakableSpecification',
+          cssSelector: ['h1', 'h2', 'article > p:first-of-type'],
+        },
+        // Access mode for accessibility
+        accessMode: ['textual', 'visual'],
+        isAccessibleForFree: true,
+        // Copyright and licence pointers
+        copyrightHolder: { '@id': orgId },
+        license: `${SITE_URL}/terms`,
+      },
+
+      // WEBPAGE
+      {
+        '@type': 'WebPage',
+        '@id': `${canonicalUrl}/#webpage`,
+        url: canonicalUrl,
+        name: post.title,
+        description: post.description || post.excerpt,
+        inLanguage: LANGUAGE,
+        isPartOf: { '@id': websiteId },
+        about: { '@id': `${canonicalUrl}/#article` },
+        primaryImageOfPage: { '@id': `${canonicalUrl}/#primaryimage` },
+        breadcrumb: { '@id': `${canonicalUrl}/#breadcrumb` },
+        datePublished: post.date,
+        dateModified: post.date,
+        // Potential action for site wide search
+        potentialAction: {
+          '@type': 'ReadAction',
+          target: [canonicalUrl],
+        },
+      },
+
+      // BREADCRUMB
+      {
+        '@type': 'BreadcrumbList',
+        '@id': `${canonicalUrl}/#breadcrumb`,
+        itemListElement: [
+          { '@type': 'ListItem', position: 1, name: 'Home', item: SITE_URL },
+          {
+            '@type': 'ListItem',
+            position: 2,
+            name: 'Blog',
+            item: `${SITE_URL}/blog`,
+          },
+          {
+            '@type': 'ListItem',
+            position: 3,
+            name: post.title,
+            item: canonicalUrl,
+          },
+        ],
+      },
+    ],
+  };
+
+  if (faqs.length > 0) {
+    jsonLdGraph['@graph'].push({
+      '@type': 'FAQPage',
+      '@id': `${canonicalUrl}/#faq`,
+      mainEntity: faqs.map((f) => ({
+        '@type': 'Question',
+        name: f.q,
+        acceptedAnswer: { '@type': 'Answer', text: f.a },
+      })),
+    });
+  }
+
+  return (
+    <article className="flex flex-col min-h-screen bg-[#0a0a0c] text-[#FFFFFF]">
+      <script
+        type="application/ld+json"
+        id="article-schema-data"
+        suppressHydrationWarning
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLdGraph) }}
+      />
+
+      {/* HERO */}
+      <section className="relative min-h-[70vh] md:min-h-[75vh] flex items-center justify-center overflow-hidden bg-[#0a0a0c]">
+        <div className="absolute inset-0 z-0">
+          <Image
+            src={post.image}
+            alt={`${post.title} - ${BRAND} blog`}
+            width={1920}
+            height={1080}
+            priority
+            fetchPriority="high"
+            className="w-full h-full object-cover scale-105 brightness-[0.22]"
+            sizes="100vw"
+          />
+          <div className="absolute inset-0 bg-gradient-to-t from-[#0a0a0c] via-[#0a0a0c]/10 to-[#0a0a0c]/10" />
+        </div>
+
+        <div
+          className="absolute inset-0 z-0 opacity-[0.06]"
+          style={{
+            backgroundImage: `linear-gradient(to right, #00843D 1px, transparent 1px), linear-gradient(to bottom, #00843D 1px, transparent 1px)`,
+            backgroundSize: '60px 60px',
+          }}
+        />
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[700px] h-[700px] bg-[#00843D]/12 blur-[150px] rounded-full pointer-events-none z-0" />
+
+        <div className="max-w-5xl mx-auto w-full px-4 sm:px-6 lg:px-8 text-center relative z-10 pt-32 sm:pt-36 md:pt-40 pb-16 flex flex-col items-center justify-center">
+          <div className="inline-flex items-center gap-2 bg-[#00843D] px-5 py-2.5 rounded-full mb-8 shadow-lg shadow-[#00843D]/30 border border-[#FFCD00]/30">
+            <BookOpen className="w-4 h-4 text-[#FFCD00]" />
+            <span className="text-[#FFFFFF] text-xs font-black uppercase tracking-widest">
+              {displayCategory}
+            </span>
+          </div>
+
+          <h1 className="text-3xl sm:text-4xl md:text-5xl lg:text-6xl xl:text-7xl font-black text-[#FFFFFF] tracking-tighter uppercase mb-6 leading-[1.05] max-w-4xl">
+            {post.title}
+          </h1>
+
+          <p className="text-base sm:text-lg md:text-xl text-[#FFFFFF]/75 font-bold max-w-3xl mx-auto leading-relaxed mb-10">
+            {post.description || post.excerpt}
+          </p>
+
+          <div className="flex flex-wrap justify-center items-center gap-3">
+            <div className="inline-flex items-center gap-2 bg-white/[0.06] border border-white/10 backdrop-blur-md px-4 py-2 rounded-full text-[#FFFFFF] text-xs font-black uppercase tracking-widest">
+              <Calendar className="w-3.5 h-3.5 text-[#FFCD00]" />
+              <span>{dateStr}</span>
+            </div>
+            <div className="inline-flex items-center gap-2 bg-white/[0.06] border border-white/10 backdrop-blur-md px-4 py-2 rounded-full text-[#FFFFFF] text-xs font-black uppercase tracking-widest">
+              <User className="w-3.5 h-3.5 text-[#FFCD00]" />
+              <span>{post.author}</span>
+            </div>
+            <div className="inline-flex items-center gap-2 bg-white/[0.06] border border-white/10 backdrop-blur-md px-4 py-2 rounded-full text-[#FFFFFF] text-xs font-black uppercase tracking-widest">
+              <Clock className="w-3.5 h-3.5 text-[#FFCD00]" />
+              <span>{readTime} min read</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* BREADCRUMB */}
+      <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 mt-10">
+        <Link
+          href="/blog"
+          className="inline-flex items-center gap-2 text-[#FFCD00] hover:text-[#FFFFFF] transition-colors font-black text-xs uppercase tracking-widest group"
+        >
+          <ArrowLeft className="w-4 h-4 group-hover:-translate-x-1 transition-transform" />
+          Back to all articles
+        </Link>
+      </div>
+
+      {/* MAIN GRID */}
+      <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-12 grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+        <div className="lg:col-span-8 order-1 lg:order-1 space-y-10">
+          <div className="relative w-full aspect-video rounded-3xl overflow-hidden border-4 border-[#00843D] shadow-[0_25px_60px_rgba(0,132,61,0.25)]">
+            <Image
+              src={post.image}
+              alt={post.title}
+              fill
+              priority
+              className="object-cover"
+              sizes="(max-width: 1024px) 100vw, 800px"
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent" />
+          </div>
+
+          <div className="relative bg-[#f2ebeb] text-[#0a0a0c] rounded-3xl border-4 border-[#00843D] shadow-[0_25px_60px_rgba(10,10,12,0.15)] p-6 sm:p-8 md:p-12">
+            <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-[#00843D]/8 to-transparent rounded-bl-[4rem] pointer-events-none" />
+
+            <div
+              className="
+                article-body
+                prose prose-lg max-w-none relative
+                [&_h2]:text-2xl [&_h2]:md:text-3xl [&_h2]:font-black [&_h2]:text-[#0a0a0c] [&_h2]:mb-5 [&_h2]:mt-12 [&_h2]:tracking-tight [&_h2]:uppercase [&_h2]:leading-tight
+                [&_h2]:pb-3 [&_h2]:border-b-4 [&_h2]:border-[#00843D]/20
+                [&_h3]:text-xl [&_h3]:md:text-2xl [&_h3]:font-black [&_h3]:text-[#00843D] [&_h3]:mb-4 [&_h3]:mt-8 [&_h3]:uppercase
+                [&_h4]:text-lg [&_h4]:md:text-xl [&_h4]:font-black [&_h4]:text-[#00843D] [&_h4]:mb-3 [&_h4]:mt-6 [&_h4]:uppercase
+                [&_p]:text-[#0a0a0c]/85 [&_p]:text-base [&_p]:md:text-lg [&_p]:font-medium [&_p]:leading-[1.8] [&_p]:mb-5 [&_p]:md:mb-6
+                [&_a]:text-[#00843D] [&_a]:font-black [&_a]:hover:text-[#006A31] [&_a]:transition-colors [&_a]:underline [&_a]:decoration-2 [&_a]:underline-offset-2
+                [&_blockquote]:border-l-4 [&_blockquote]:border-[#00843D] [&_blockquote]:bg-[#00843D]/5 [&_blockquote]:pl-6 [&_blockquote]:py-3 [&_blockquote]:my-6 [&_blockquote]:text-[#0a0a0c]/70 [&_blockquote]:italic [&_blockquote]:rounded-r-xl
+                [&_code]:bg-[#0a0a0c]/10 [&_code]:px-2 [&_code]:py-1 [&_code]:rounded-lg [&_code]:text-[#00843D] [&_code]:text-sm [&_code]:font-bold
+                [&_pre]:bg-[#0a0a0c] [&_pre]:text-[#FFFFFF] [&_pre]:p-6 [&_pre]:rounded-2xl [&_pre]:overflow-x-auto
+                [&_img]:rounded-2xl [&_img]:my-8 [&_img]:border-4 [&_img]:border-[#00843D] [&_img]:w-full [&_img]:h-auto [&_img]:shadow-2xl
+                [&_hr]:border-[#00843D]/20 [&_hr]:my-12
+              "
+              dangerouslySetInnerHTML={{ __html: safeContent }}
+            />
+          </div>
+
+          <ShareButtons title={`${post.title} - ${BRAND}`} url={canonicalUrl} />
+
+          {post.keywords && post.keywords.length > 0 && (
+            <div className="pt-2">
+              <div className="flex items-center gap-2 mb-5">
+                <Tag className="w-5 h-5 text-[#FFCD00]" />
+                <h2 className="text-[#FFFFFF] font-black text-base md:text-lg uppercase tracking-wide">
+                  Topics in this article
+                </h2>
+              </div>
+              <div className="flex flex-wrap gap-2.5">
+                {post.keywords.slice(0, 8).map((keyword: string) => (
+                  <span
+                    key={keyword}
+                    className="px-4 py-2 bg-[#f2ebeb] text-[#0a0a0c] text-xs md:text-sm font-black uppercase tracking-wider rounded-full border-2 border-[#00843D] shadow-md hover:bg-[#00843D] hover:text-[#FFFFFF] hover:scale-105 transition-all cursor-default"
+                  >
+                    {keyword}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="relative overflow-hidden rounded-3xl border-4 border-[#00843D] bg-gradient-to-br from-[#f2ebeb] to-[#f0f9f3] shadow-2xl p-6 md:p-8">
+            <div className="absolute top-0 right-0 w-24 h-24 bg-[#00843D]/10 rounded-bl-[3rem] pointer-events-none" />
+            <div className="flex flex-col sm:flex-row items-center sm:items-start gap-5 md:gap-6 text-center sm:text-left relative z-10">
+              <div className="relative w-20 h-20 md:w-24 md:h-24 rounded-full overflow-hidden border-4 border-[#00843D] shadow-xl flex-shrink-0">
+                <Image
+                  src="/img/profile.webp"
+                  alt={`${post.author} - IPTV Australia Specialist`}
+                  fill
+                  className="object-cover"
+                  sizes="96px"
+                />
+              </div>
+              <div className="flex-1">
+                <div className="inline-flex items-center gap-2 bg-[#00843D] text-[#FFFFFF] px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest mb-3 border border-[#FFCD00]/40">
+                  <User className="w-3 h-3 text-[#FFCD00]" /> Author
+                </div>
+                <h2 className="text-[#0a0a0c] font-black text-2xl md:text-3xl mb-1 uppercase tracking-tight">
+                  {post.author}
+                </h2>
+                <p className="text-[#00843D] text-xs md:text-sm uppercase tracking-widest font-black mb-3">
+                  IPTV Australia Specialist
+                </p>
+                <p className="text-[#0a0a0c]/85 text-sm md:text-base font-semibold leading-relaxed">
+                  Specialised in streaming protocols, app configurations, and Australian network optimisations. Helps customers get the most out of their 4K IPTV Australia subscription and IBO Player Pro setups.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <ArticleScrollSidebar
+          relatedPosts={relatedPosts}
+          whatsappIboMsg={whatsappIboMsg}
+          whatsappSubMsg={whatsappSubMsg}
+        />
+      </div>
+
+      <div className="border-t border-white/5 mt-12 py-8 bg-[#0a0a0c]">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex flex-wrap justify-center gap-4 md:gap-8 text-[#FFFFFF]/60 text-xs font-black uppercase tracking-widest">
+            <span className="flex items-center gap-2">
+              <Zap className="w-4 h-4 text-[#FFCD00]" /> 4K Ultra HD
+            </span>
+            <span className="flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-[#FFCD00]" /> 99.9% Server Uptime
+            </span>
+            <span className="flex items-center gap-2">
+              <Headphones className="w-4 h-4 text-[#FFCD00]" /> 24/7 WhatsApp Support
+            </span>
+          </div>
+          <p className="text-center text-[#FFFFFF]/40 text-xs mt-6 font-bold">
+            © 2026 {BRAND}. All rights reserved. Made in Australia 🇦🇺
+          </p>
+        </div>
+      </div>
+    </article>
+  );
+}
