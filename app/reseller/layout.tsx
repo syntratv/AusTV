@@ -21,7 +21,7 @@ const clampDescription = (s: string, max = 158): string =>
 // SEO STRINGS — locked to safe SERP lengths
 // ---------------------------------------------------------------------------
 const PAGE_TITLE = clampTitle(
-  `IPTV Reseller Australia | Start at A$450 | ${BRAND}`
+  `IPTV Reseller Australia | Start at A$450`
 );
 
 const PAGE_DESCRIPTION = clampDescription(

@@ -40,7 +40,7 @@ const clampDescription = (s: string, max = 160): string =>
 const BRAND = CONSTANTS.BRAND_NAME;
 
 const SEO_TITLE = clampTitle(
-  `IPTV Australia — Smart 4K Streaming, Sports & Movies`
+  `IPTV Australia - Smart 4K Streaming, Sports & Movies`
 );
 
 const SEO_DESCRIPTION = clampDescription(
@@ -272,7 +272,7 @@ export default function RootLayout({
         <main className="relative z-10">{children}</main>
         <Footer />
 
-        <GoogleAnalytics gaId="G-xxxxxxxx" />
+        <GoogleAnalytics gaId="G-CVYWG8BCHS" />
         <FloatingWhatsApp />
       </body>
     </html>
