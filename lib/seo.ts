@@ -137,8 +137,8 @@ export const generateSEOMetadata = (
     alternates: {
       canonical: fullCanonicalUrl,
       languages: {
-        [LANGUAGE]: fullCanonicalUrl,
         'en-AU': fullCanonicalUrl,
+        'en-US': fullCanonicalUrl,
         'x-default': fullCanonicalUrl,
       },
     },
